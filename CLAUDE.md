@@ -278,7 +278,10 @@ See `DEVNOTES.md` for:
 - In-progress feature work
 - Star Citizen #ivo animation format (next target)
 
-## Vault Sync
+## Vault
+
+VAULT_PROJECT_NAME: Cryengine Converter
+VAULT_PROJECT_DIRECTORY: development/Projects/Cryengine Converter
 
 To push files to the vault, run:
 ```bash
