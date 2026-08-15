@@ -6,6 +6,8 @@
 
 Since the 2.0 release, this fork has added two new export pipelines — glTF/GLB and an experimental USD (Universal Scene Description) renderer, which is now the default output format — alongside broad animation support that loads `.chrparams`, `.dba`, `.caf`, and `.cal` files and correctly handles additive animations (deltas from rest pose) across Collada, glTF, and USD exports; this has been verified against Mechwarrior Online, Armored Warfare, ArcheAge, and Kingdom Come Deliverance 2 assets. On the Star Citizen side, support for the proprietary `#ivo` format has been extended significantly: skinned meshes, DBA/CAF animation clips (rotation decoding working, position decoding still in progress), and — new in this release — static LOD mesh geometry (`ChunkIvoLodMeshData`) with multi-section parsing and a scale/origin decode fix so multi-part models assemble correctly instead of rendering duplicated or half-sized. The material system also gained hierarchical submaterial and binary-XML (`CryXmlB`) improvements. See [DEVNOTES.md](DEVNOTES.md) for in-depth technical notes on this work.
 
+---
+
 [Cryengine Converter](https://www.heffaypresents.com/GitHub) is a C# program to help convert Cryengine assets into a more portable format. It supports `.dae` (Collada), `.gltf`/`.glb` (glTF), and `.usd`/`.usda` (USD, experimental) output; `.obj` (Wavefront) export exists but is no longer supported. The default output format is USD, though Collada remains the most feature-complete option, including Armature/rigs with vertex weights and full material handling.
 
 How do you use it?  Well, here is the output from the current Usage:
