@@ -1556,6 +1556,20 @@ public partial class CryEngine
     /// inventoryOccupancyLocalBounds exactly, confirming the node box is true model space
     /// and not merely self-consistent.
     ///
+    /// CORRECTION 2026-08-15: the x2 correction is right, but the scale used to pivot on
+    /// QuantizationCenter rather than on the decoded slice's own centre. Those coincide only
+    /// when the LOD0 vertices fill the quantization volume symmetrically; where they do not,
+    /// the part is displaced by twice the difference, since the scale step doubles it.
+    ///
+    /// A second change was tried the same day and REVERTED: resting a mesh at the origin
+    /// whenever its node carried a translation, on the theory that the node's box centre
+    /// double-counted the placement. It does not. The box centre is expressed in the node's
+    /// OWN space, so it is an additional local offset, and all three contributions (box
+    /// centre, node transform, parent transform) are needed. Discarding it moved the SW16BR2
+    /// barrel 0.362 inward while leaving its length correct — which looks exactly like a
+    /// truncated barrel. See the placement comment further down for the verification against
+    /// entity-declared bounds.
+    ///
     /// This was invisible for years because each file was rendered alone with an
     /// auto-framed camera, where a uniform half-scale cannot be seen. It only surfaced
     /// when parts had to be combined against hardpoint offsets that come from a
@@ -1659,16 +1673,53 @@ public partial class CryEngine
         var lod0Verts = new System.Numerics.Vector3[lod0VertCount];
         System.Array.Copy(lodMesh.RawPositions, 0, lod0Verts, 0, (int)lod0VertCount);
 
-        // Map the half-scale, quantization-centred decode into real model space (see the
-        // method's remarks). Scale about the section's own centre, then move that centre
-        // onto the node box's centre when one is known.
-        var quantCenter = lodMesh.QuantizationCenter;
-        var targetCenter = quantCenter;
+        // Correct the half-scale decode, and leave PLACEMENT to the node (see remarks).
+        //
+        // Pivot on the LOD0 slice's own centre rather than QuantizationCenter. The two
+        // differ whenever the decoded vertices do not fill the quantization volume
+        // symmetrically — measured up to 0.086 on the BRVS chassis — and pivoting on the
+        // wrong point doubles that error through the scale step.
+        var sliceCenter = lod0Verts[0];
+        {
+            var lo = lod0Verts[0];
+            var hi = lod0Verts[0];
+            foreach (var v in lod0Verts)
+            {
+                lo = System.Numerics.Vector3.Min(lo, v);
+                hi = System.Numerics.Vector3.Max(hi, v);
+            }
+            sliceCenter = (lo + hi) / 2f;
+        }
+
+        // The mesh comes to rest on its node's bounding-box centre, which is expressed in
+        // the node's OWN space. The node transform (BoneToWorld, applied downstream by the
+        // renderer) then places the node, and a parent node's transform composes on top of
+        // that. All three contributions are needed and none of them is redundant.
+        //
+        // Verified 2026-08-15 on behr_bal_rep_s2_bar_1 against the barrel entity's declared
+        // inventoryOccupancyLocalBounds (-0.452 .. 1.301, length 1.753), which is
+        // independent of anything this converter computes:
+        //     bar_body   box Y [-0.5254, 0.5254] + T 0.07337            -> -0.45203 .. 0.59877
+        //     barrel     box Y [-0.2714, 0.9967] + T 0.23123 + parent   ->  0.03320 .. 1.30130
+        //     part total                                                -> -0.452   .. 1.3013
+        // matching the declared bounds on both ends. Briefly, earlier the same day, a node
+        // that carried a translation was rested at the origin instead on the theory that the
+        // box centre double-counted the placement. It does not: the barrel's box centre is
+        // Y 0.36265, and discarding it left the barrel 0.362 short of its muzzle while
+        // leaving its length correct — which reads as a truncated barrel but is a
+        // misplacement. The real defect that motivated that change was the pivot above.
+        //
+        // Files whose NodeMeshCombo reports zero nodes (the shared radar meshes) pass no box
+        // and get no node transform either: scale in place about their own centre, the only
+        // placement information such a file carries.
+        System.Numerics.Vector3 restCenter;
         if (nodeBoundingBoxMin is { } nbMin && nodeBoundingBoxMax is { } nbMax)
-            targetCenter = (nbMin + nbMax) / 2f;
+            restCenter = (nbMin + nbMax) / 2f;
+        else
+            restCenter = sliceCenter;
 
         for (int i = 0; i < lod0Verts.Length; i++)
-            lod0Verts[i] = (lod0Verts[i] - quantCenter) * IvoLodMeshScaleCorrection + targetCenter;
+            lod0Verts[i] = (lod0Verts[i] - sliceCenter) * IvoLodMeshScaleCorrection + restCenter;
 
         // Compute bounding box
         var bmin = lod0Verts[0];
