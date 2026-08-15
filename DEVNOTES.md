@@ -349,6 +349,12 @@ When implementing a new `ChunkController_XXX`:
 - Check case sensitivity of bone names in hash
 - Log which controllers couldn't find matching bones
 
+### Star Citizen #ivo LOD Mesh Geometry (multi-section support added)
+
+**Status**: `ChunkIvoLodMeshData`/`_900` now reads every `CAFEBABE` section in a file (previously only the first), mapping sections 1:1 to `Geometry`-type nodes in file order, and applies a corrected `2.0` scale/re-centering fix so decoded geometry lands in true model space instead of half-size at the wrong origin. Unbuildable sections (corrupt descriptors, bad index ranges) are now skipped without invalidating the rest of the file. Full debugging history and file list in `SESSION-HANDOVER.md`.
+
+**Still open**: no per-LOD boundary marker in the section descriptor table means `BuildLodMeshGeometry` can occasionally include/drop a few vertices at LOD boundaries (see `SESSION-HANDOVER.md` "DR Model-XJ2 barrel_02" case). Parked pending further reverse-engineering.
+
 ### Star Citizen #ivo Animation Format (IN PROGRESS)
 
 **Status**: Rotation animation parsing implemented and working. Position animation skipped (compression not decoded). Both USD and glTF renderers have Ivo DBA animation support. Double-transform issue on child meshes has been diagnosed and solution documented (see below).

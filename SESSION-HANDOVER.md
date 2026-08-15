@@ -10,9 +10,11 @@ correction, and the unbuildable-section guards. Previous binary backed up to
 `D:\projects\sc-scrafting-sync\Tools\bak\cgf-converter_20260814_161500.exe`. All prior sessions' fixes are
 still included.)
 
-> ⚠ **This repo is not under git.** `bak/*.cs` timestamped copies are the only history for every C# change
-> here, including session 9's four edited files. Putting it under version control is the first task for
-> 2026-08-15 — see `sc_crafting_sync/docs/TODO.md` item 21.
+> ✅ **This repo is now under git** (2026-08-15), pushed to `https://github.com/city028/Cryengine-Converter`
+> as `master`, tagged `v2.1.0`. All prior work, including session 9's four edited files, is captured in the
+> initial commit `dd0f477` on top of the fork's existing `v2.0` history. `bak/*.cs` timestamped copies remain
+> the local editing-backup convention (see root `CLAUDE.md`) but are no longer the only history — use `git log`
+> / `git diff` going forward. `bak/` and `sync.ffs_db` are gitignored and stay local-only.
 
 ---
 

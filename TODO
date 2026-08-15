@@ -1,8 +1,13 @@
 TODO File
 
-2.0 release
+2.0 release (done)
 - Animations
 - USD support
+
+2.1 release (done)
+- Star Citizen #ivo LOD mesh chunk support (ChunkIvoLodMeshData/_900), including multi-section
+  geometry and the scale/origin decode fix (see DEVNOTES.md, SESSION-HANDOVER.md)
+- Project moved under git version control, pushed to city028/Cryengine-Converter
 
 Future
 - .pak file system support (issue #193 related)

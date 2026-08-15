@@ -2,29 +2,72 @@
 
 # Cryengine Converter
 
-[Cryengine Converter](https://www.heffaypresents.com/GitHub) is a C# program to help convert Cryengine assets into a more portable format. Currently it supports `.obj` (No longer supported) and `.dae` (Collada), although work is in progress to allow exporting Cryengine assets into USD (Universal Scene Description) format.  The default output is Collada, as this supports the most features, including Armature/rigs with vertex weights, as well as improved material handling.
+## Recent Changes (v2.1)
+
+Since the 2.0 release, this fork has added two new export pipelines — glTF/GLB and an experimental USD (Universal Scene Description) renderer, which is now the default output format — alongside broad animation support that loads `.chrparams`, `.dba`, `.caf`, and `.cal` files and correctly handles additive animations (deltas from rest pose) across Collada, glTF, and USD exports; this has been verified against Mechwarrior Online, Armored Warfare, ArcheAge, and Kingdom Come Deliverance 2 assets. On the Star Citizen side, support for the proprietary `#ivo` format has been extended significantly: skinned meshes, DBA/CAF animation clips (rotation decoding working, position decoding still in progress), and — new in this release — static LOD mesh geometry (`ChunkIvoLodMeshData`) with multi-section parsing and a scale/origin decode fix so multi-part models assemble correctly instead of rendering duplicated or half-sized. The material system also gained hierarchical submaterial and binary-XML (`CryXmlB`) improvements. See [DEVNOTES.md](DEVNOTES.md) for in-depth technical notes on this work.
+
+[Cryengine Converter](https://www.heffaypresents.com/GitHub) is a C# program to help convert Cryengine assets into a more portable format. It supports `.dae` (Collada), `.gltf`/`.glb` (glTF), and `.usd`/`.usda` (USD, experimental) output; `.obj` (Wavefront) export exists but is no longer supported. The default output format is USD, though Collada remains the most feature-complete option, including Armature/rigs with vertex weights and full material handling.
 
 How do you use it?  Well, here is the output from the current Usage:
 
 ```
-PS D:\scripts> cgf-converter
+PS D:\scripts> cgf-converter -usage
 
-cgf-converter [-usage] | <.cgf file> [-outputfile <output file>] [-objectdir <ObjectDir>] [-obj] [-blend] [-dae] [-smooth] [-throw]
+cgf-converter [-usage] | <.cgf file> [-dae] [-obj] [-glb] [-gltf] [-usd] [-notex/-png/-tif/-tga] [-excludenode <nodename>] [-excludemat <matname>] [-loglevel <LogLevel>] [-objectdir <ObjectDir>] [-anim]
 
--usage:           Prints out the usage statement
+-usage:            Prints out the usage statement
 
-<.cgf file>:      The name of the .cgf, .cga or .skin file to process
--outputfile:      The name of the file to write the output.  Default is [root].obj
--noconflict:      Use non-conflicting naming scheme (<cgf File>_out.obj)
--allowconflict:   Allows conflicts in .mtl file name
--objectdir:       The name where the base Objects directory is located.  Used to read mtl file
-                  Defaults to current directory.
--dae:             Export Collada format files (Default)
--smooth:          Smooth Faces
--group:           Group meshes into single model
+<.cgf file>:       The name of the .cgf, .cga, .chr, .anim, .dba or .skin file to process.
+-objectdir:        (Optional but highly recommended) The name where the base Objects directory is located (i.e. where the .pak files were extracted).
+                   Defaults to current directory. Some packfile formats may accept additional options in the form of some.pack.file?key=value&key2=value2.
+-mtl/mat/material:  (Optional) The material file to use.
 
--throw:           Throw Exceptions to installed debugger
+ Export formats.   By default -usd is used.
+-usd/-usda:        Export USD format files (default).
+-dae:              Export Collada format files.
+-glb:              Export glb (glTF binary) files. Embeds textures by default so expect large files!
+-gltf:             Export file pairs of glTF and bin files.
+-obj:              Export Wavefront format files (Not supported).
+
+  Texture Options.
+-notex:            Do not include textures in outputs.
+-ut/-unsplittextures:
+                   Use DDS Unsplitter to combine split DDS texture files into a single file.
+
+-en/-excludenode   <regular expression for node names>:
+                   Exclude matching nodes from rendering. Can be listed multiple times.
+-em/-excludemat    <regular expression for material names>
+                   Exclude meshes with matching materials from rendering. Can be listed multiple times.
+-es/-excludeshader  <material_name>:
+                   Exclude meshes with the material using matching shader from rendering. Can be listed multiple times.
+-noconflict:       Append _out to output filename to avoid naming conflicts.
+
+-pp/-preservepath:
+                   Preserve the path hierarchy.
+-mt/-maxthreads <number>
+                   Set maximum number of threads to use. Specify 0 to use all cores.
+
+  glTF/GLB Options.
+-tif:              Reference .tif files instead of converting to PNG (glTF text mode only).
+-png:              Reference .png files instead of converting to PNG (glTF text mode only).
+-tga:              Reference .tga files instead of converting to PNG (glTF text mode only).
+-embedtextures:    Embed textures into the glTF text output instead of external references.
+                   GLB output always embeds textures as PNG regardless of these flags.
+-sl/-splitlayer(s)
+                   Split into multiple layers (terrain only).
+
+  Wavefront Options (obj export only, not supported).
+-smooth:           Smooth faces.
+-group:            Group meshes into single model.
+
+  Animation Options.
+-anim/-animations: Include animations in the conversion output.
+                   Loads .chrparams, .dba, .caf, and .cal animation files.
+
+-loglevel:         Set the output log level (verbose, debug, info, warn, error, critical, none)
 ```
+
+> This list is generated by `cgf-converter -usage` — run it any time to see the exact options for the version you have installed.
 
 Ok, so how do you actually **USE** it?
 
@@ -72,6 +115,27 @@ PS D:\Depot\Star Citizen\Objects\Spaceships.ships\AEGS\gladius\>cgf-converter AE
 ```
 You can replace the `-dae` with `-collada` as well.
 
+#### glTF / GLB (-gltf / -glb)
+glTF is a good option if your target application (game engine, web viewer, Blender, etc.) has better glTF support than Collada or USD. `-gltf` writes a `.gltf` JSON file plus a companion `.bin` file; `-glb` writes a single binary `.glb` file with textures embedded by default (expect large files).
+
+```
+PS D:\Depot\Star Citizen\Objects\Spaceships.ships\AEGS\gladius\>cgf-converter AEGS_Gladius.cga -gltf -objectdir <insert the directory to the Object dir>
+```
+
+#### USD (-usd / -usda, default, experimental)
+USD (Universal Scene Description) is the default output format and is the actively developed target for skeletal animation export. It's still considered experimental — Collada remains the most battle-tested option if you hit issues.
+
+```
+PS D:\Depot\Star Citizen\Objects\Spaceships.ships\AEGS\gladius\>cgf-converter AEGS_Gladius.cga -usd -objectdir <insert the directory to the Object dir>
+```
+
+#### Animations (-anim)
+Add `-anim` to any of the formats above to include animations in the output. This loads the model's `.chrparams` (or `.cal` for CAL-based games) to discover and load the referenced `.dba`/`.caf` animation files.
+
+```
+PS D:\Depot\Star Citizen\Objects\Spaceships.ships\AEGS\gladius\>cgf-converter AEGS_Gladius.chr -usd -anim -objectdir <insert the directory to the Object dir>
+```
+
 #### Waveform (`-obj`.  Avoid using this unless you absolutely have to.  Not supported!)
 To convert a single `.cga/.cgf/.skin/.chr` file to an `.obj` file, using Powershell:
 
@@ -99,7 +163,7 @@ If you want to convert all the files in a directory, you can provide a wildcard 
 cgf-converter *.cga -objectdir <path to the Objects folder>
 ```
 
-This will take every file in the directory where the command is being run and convert it to Collada format.
+This will take every file in the directory where the command is being run and convert it to USD format (the default). Add `-dae`, `-gltf`, or `-glb` to convert to a different format instead.
 
 If you want to convert all the files in a directory as well as all the directories below it, you can use the `-recurse` option to make it traverse:
 
@@ -108,6 +172,6 @@ foreach ($file in (get-childitem -recurse *.cga,*.cgf,*.chr,*.skin)) { cgf-conve
 ```
 > **NOTE:** If you run this on the `Objects` directory, it will convert EVERY file in the game.  This can take a very long time, and takes a lot of disk space.  Be careful using the command like this.
 
-Finally, the converter does support being run through the Windows Explorer, so you can just drag a `.cga` file or files onto `cgf-converter.exe` and it'll do a default conversion (to `.dae`).  This isn't ideal, but it is the quick and dirty way if you are morally opposed to using a prompt. :+1:
+Finally, the converter does support being run through the Windows Explorer, so you can just drag a `.cga` file or files onto `cgf-converter.exe` and it'll do a default conversion (to `.usd`).  This isn't ideal, but it is the quick and dirty way if you are morally opposed to using a prompt. :+1:
 
 Questions?  Feel free to contact me and I'll be happy to provide some additional help.

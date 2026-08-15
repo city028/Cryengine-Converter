@@ -121,6 +121,8 @@ Output File (.dae/.gltf/.glb/.usd)
 
 **#ivo Format (Star Citizen 3.23+)**: Uses `ChunkNodeMeshCombo` + `ChunkIvoSkinMesh`. Consolidated mesh data in single chunk with `VertUV` structure. Vertices are bounding-box compressed and require decompression.
 
+**#ivo LOD Mesh Format (Star Citizen 4.5+)**: Static (non-skinned) geometry uses `ChunkIvoLodMeshData`/`ChunkIvoLodMeshData_900` instead of `ChunkIvoSkinMesh`. A file's geometry may span multiple `CAFEBABE`-tagged sections, each corresponding 1:1 to a `Geometry`-type node in file order — every section must be read and mapped to its own node, not just the first. Vertex positions are decoded relative to `QuantizationCenter` and require a `2.0` scale correction (`QuantizationScale` behaves as a half-extent) plus re-centering on the owning node's bounding-box center to land in correct model space. See `SESSION-HANDOVER.md` for the debugging history behind this.
+
 ### Version Handling
 
 Cryengine versions (0x744, 0x745, 0x746, 0x900) are handled via naming convention: `ChunkName_VERSION.cs`. The factory uses reflection to find and instantiate the correct version at runtime. When adding support for a new chunk version, create a new file following this pattern.
