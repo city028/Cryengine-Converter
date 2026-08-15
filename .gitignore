@@ -317,6 +317,7 @@ OpenCover/
 *.dds.*
 *.mtl
 
-# Inno Setup installer build output
-installer/output/
+# Local editing backups and sync tool state
+/bak/
+sync.ffs_db
 

@@ -84,7 +84,7 @@ public abstract class Chunk : IBinaryChunk
             // Star Citizen 4.5+ new chunk types - safely skipped (metadata/LOD data not needed for rendering)
             ChunkType.IvoAssetMetadata => new ChunkUnknown(),    // Asset GUIDs - skip
             ChunkType.IvoLodDistances => new ChunkUnknown(),     // LOD thresholds - skip (we export LOD0)
-            ChunkType.IvoLodMeshData => new ChunkUnknown(),      // LOD1-4 meshes - skip (we export LOD0)
+            ChunkType.IvoLodMeshData => Chunk.New<ChunkIvoLodMeshData>(version),
             ChunkType.IvoBoundingData => new ChunkUnknown(),     // Bounding data - skip
             ChunkType.IvoChunkTerminator => new ChunkUnknown(),  // EOF marker - skip
             ChunkType.IvoMtlNameVariant => new ChunkUnknown(),   // Material variant - skip (rare)

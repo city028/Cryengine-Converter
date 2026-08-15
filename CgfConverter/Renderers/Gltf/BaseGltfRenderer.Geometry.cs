@@ -31,8 +31,11 @@ public partial class BaseGltfRenderer
 
         // For Ivo format with skinning, create skeleton first and attach meshes to skeleton nodes
         // This ensures geometry moves with the skeleton
+        // Requires actual skin vertex data (BoneMappings or IntVertices); rigid .cga meshes have
+        // CompiledBones but no skin data, so we skip this path for them.
         if (!omitSkins && cryData.SkinningInfo is { HasSkinningInfo: true } skinningInfo
-            && HasObjectNodeIndexMappings(skinningInfo))
+            && HasObjectNodeIndexMappings(skinningInfo)
+            && (skinningInfo.BoneMappings?.Count > 0 || skinningInfo.IntVertices?.Count > 0))
         {
             CreateIvoSkeletonWithMeshes(nodes, cryData, skinningInfo);
             return;
@@ -478,7 +481,23 @@ public partial class BaseGltfRenderer
         // Transform node's local matrix into glTF coordinate system and decompose to TRS.
         // glTF spec requires matrices to be TRS-decomposable; using TRS components directly
         // avoids validator warnings and ensures correct behavior across all viewers.
-        var transformedMatrix = SwapAxes(cryNode.LocalTransform);
+        //
+        // ChunkNode.LocalTransform applies a blanket Matrix4x4.Transpose(Transform) — correct
+        // for traditional-format nodes (ChunkNode_824 reads Transform's rotation block already
+        // oriented for CryEngine's own convention, needing one transpose to become .NET-native),
+        // but WRONG for Ivo-format nodes: CryEngine.cs builds their Transform via
+        // Matrix3x4.ConvertToLocalTransformMatrix(), which already pre-transposes the rotation
+        // block AND places translation in M41-M43 (.NET's native slot, matching what
+        // Matrix4x4.Decompose() reads). Applying LocalTransform's transpose on top of that
+        // double-transposes the rotation back to the wrong orientation and — critically — moves
+        // the translation out of M41-M43 into M14/M24/M34, which Decompose() never reads, so it
+        // silently comes back as Vector3.Zero. Confirmed 2026-08-13: ESPR Laser Cannon S1's
+        // "hardpoint_bar" node has a real, non-zero position when read via cryNode.Transform (and
+        // matches --dump-nodes exactly), but decodes as (0,0,0) through cryNode.LocalTransform —
+        // the ship-weapon attached-part combining feature's "barrel floats away from the chassis"
+        // symptom traces directly to this, not to any de-quantization/scale issue. For Ivo files,
+        // Transform is already the correct, ready-to-decompose matrix — use it directly.
+        var transformedMatrix = SwapAxes(cryData.IsIvoFile ? cryNode.Transform : cryNode.LocalTransform);
 
         if (Matrix4x4.Decompose(transformedMatrix, out var scale, out var rotation, out var translation))
         {
@@ -548,7 +567,8 @@ public partial class BaseGltfRenderer
         if (omitSkins)
             return;
 
-        if (cryData.SkinningInfo is { HasSkinningInfo: true } skinningInfo)
+        if (cryData.SkinningInfo is { HasSkinningInfo: true } skinningInfo
+            && (skinningInfo.BoneMappings?.Count > 0 || skinningInfo.IntVertices?.Count > 0))
         {
             var geometrySubsets = meshChunk?.GeometryInfo?.GeometrySubsets;
             // Ivo format (VertUVs) requires per-subset extraction; traditional format (Vertices) uses raw arrays

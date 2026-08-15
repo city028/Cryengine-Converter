@@ -150,6 +150,14 @@ public partial class CryEngine
                     skinMesh = Models[0].ChunkMap.Values.FirstOrDefault(x => x.ChunkType == ChunkType.IvoSkin || x.ChunkType == ChunkType.IvoSkin2) as ChunkIvoSkinMesh;
                 }
 
+                // Fall back to IvoLodMeshData (SC 4.5+ .cga files with no companion .cgam)
+                ChunkIvoLodMeshData? lodMesh = null;
+                if (skinMesh is null)
+                {
+                    lodMesh = Models[0].ChunkMap.Values
+                        .FirstOrDefault(x => x.ChunkType == ChunkType.IvoLodMeshData) as ChunkIvoLodMeshData;
+                }
+
                 var geometryMeshDetails = skinMesh?.MeshDetails;
 
                 var stringTable = comboChunk?.NodeNames ?? [];
@@ -185,6 +193,37 @@ public partial class CryEngine
                     }
                 }
 
+                // For lodMesh: build one geometry per CAFEBABE section. A chunk carries one
+                // section per mesh-bearing node, in the same order as the NodeMeshCombo's
+                // Geometry-type nodes (verified 2026-08-14 across single- and multi-section
+                // files). Before this, section 0 was built once and handed to *every*
+                // geometry node, so multi-section files rendered the same mesh two or three
+                // times and their other sections were lost entirely.
+                var lodGeometries = new List<GeometryInfo>();
+                if (lodMesh is not null && comboChunk.NumberOfMeshSubsets > 0)
+                {
+                    // Each section is placed using its own node's bounding box, so pair them
+                    // up in order before building.
+                    var geometryNodes = comboChunk.NodeMeshCombos
+                        .Where(n => n.GeometryType == IvoGeometryType.Geometry)
+                        .ToList();
+
+                    for (int s = 0; s < lodMesh.Sections.Count; s++)
+                    {
+                        var owner = s < geometryNodes.Count ? geometryNodes[s] : null;
+                        lodGeometries.Add(BuildLodMeshGeometry(
+                            lodMesh.Sections[s], owner?.BoundingBoxMin, owner?.BoundingBoxMax));
+                    }
+
+                    if (lodGeometries.Count > 0 && geometryNodes.Count != lodGeometries.Count)
+                        Log.W($"IvoLodMeshData has {lodGeometries.Count} geometry section(s) but " +
+                              $"{geometryNodes.Count} Geometry-type node(s) — sections are matched in order " +
+                              "and any surplus node reuses the last section");
+                }
+
+                // Ordinal of the current Geometry-type node, used to pick its section.
+                int geometryNodeOrdinal = 0;
+
                 for (int index = 0; index < comboChunk.NodeMeshCombos.Count; index++)
                 {
                     var node = comboChunk.NodeMeshCombos[index];
@@ -194,10 +233,38 @@ public partial class CryEngine
 
                     ChunkMesh chunkMesh = new ChunkMesh_802();
 
-                    var hasGeometry = subsets.Count != 0 && geometryMeshDetails is not null && skinMesh is not null;
+                    // For lodMesh: assign geometry to the node with Geometry type
+                    var hasGeometry = subsets.Count != 0 &&
+                        geometryMeshDetails is not null && skinMesh is not null;
+                    var hasLodGeometry = lodGeometries.Count > 0 &&
+                        node.GeometryType == IvoGeometryType.Geometry;
+
+                    // Take this node's own section; clamp so a file with fewer sections than
+                    // geometry nodes degrades to reusing the last one rather than throwing.
+                    GeometryInfo? lodGeometry = hasLodGeometry
+                        ? lodGeometries[System.Math.Min(geometryNodeOrdinal, lodGeometries.Count - 1)]
+                        : null;
+                    if (hasLodGeometry)
+                        geometryNodeOrdinal++;
+
+                    // A section BuildLodMeshGeometry declined to build (corrupt or empty
+                    // descriptor table) yields a GeometryInfo with no vertices. Attaching it
+                    // anyway writes a null entry into the glTF "meshes" array, which makes the
+                    // whole file unparseable — Blender rejects it outright with "Couldn't parse
+                    // glTF". Confirmed on the Reign-3 Repeater chassis, whose two tiny
+                    // ext_light_sconce sections have a zero-terminated descriptor table.
+                    // Treat those nodes as having no mesh, so the rest of the file still loads.
+                    if (lodGeometry is not null &&
+                        (lodGeometry.Vertices is null || lodGeometry.Vertices.NumElements == 0))
+                    {
+                        Log.W($"Node '{(index < stringTable.Count ? stringTable[index] : $"node_{index}")}' " +
+                              "has no usable geometry (empty or corrupt section) — emitting it without a mesh");
+                        lodGeometry = null;
+                        hasLodGeometry = false;
+                    }
 
                     // Create a meshchunk for nodes with geometry
-                    if (hasGeometry)
+                    if (hasGeometry && skinMesh is not null)
                     {
                         chunkMesh.ScalingVectors = geometryMeshDetails!.ScalingBoundingBox;
                         chunkMesh.MaxBound = node.BoundingBoxMax;
@@ -207,10 +274,20 @@ public partial class CryEngine
                         chunkMesh.NumVertSubsets = skinMesh.MeshDetails.NumberOfSubmeshes;
                         chunkMesh.GeometryInfo = BuildNodeGeometryInfo(skinMesh, subsets);
                     }
+                    else if (hasLodGeometry)
+                    {
+                        chunkMesh.MaxBound = node.BoundingBoxMax;
+                        chunkMesh.MinBound = node.BoundingBoxMin;
+                        chunkMesh.NumVertices = (int)(lodGeometry!.Vertices?.NumElements ?? 0);
+                        chunkMesh.NumIndices = (int)(lodGeometry.Indices?.NumElements ?? 0);
+                        chunkMesh.NumVertSubsets = (uint)(lodGeometry.GeometrySubsets?.Count ?? 0);
+                        chunkMesh.GeometryInfo = lodGeometry;
+                    }
 
                     // Use node name from string table if available, otherwise generate a name
                     var nodeName = index < stringTable.Count ? stringTable[index] : $"node_{index}";
 
+                    bool nodeHasGeometry = hasGeometry || hasLodGeometry;
                     var newNode = new ChunkNode_823
                     {
                         Name = nodeName,
@@ -219,15 +296,15 @@ public partial class CryEngine
                         ParentNodeID = node.ParentIndex == 0xffff ? -1 : node.ParentIndex,
                         NumChildren = node.NumberOfChildren,
                         // Get material ID from mesh subsets (not materialTable which uses mesh subset indices, not node indices)
-                        MaterialID = hasGeometry ? subsets[0].MatID : 0,
+                        MaterialID = hasGeometry && subsets.Count > 0 ? subsets[0].MatID : 0,
                         Transform = node.BoneToWorld.ConvertToLocalTransformMatrix(),
                         ChunkType = ChunkType.Node,
                         ID = (int)node.Id,
-                        MeshData = hasGeometry ? chunkMesh : null,
+                        MeshData = nodeHasGeometry ? chunkMesh : null,
                         MaterialFileName = materialFileName
                     };
 
-                    if (hasGeometry && Materials.Count > 0)
+                    if (nodeHasGeometry && Materials.Count > 0)
                         newNode.Materials = Materials.Values.First();
 
                     Nodes.Add(newNode);
@@ -255,7 +332,32 @@ public partial class CryEngine
             }
             else  // Skin version.  Manually create mesh chunk and submeshes.
             {
-                ChunkMesh? chunkMesh = Models.Count == 1 ? null : CreateMeshData();
+                // Some SC 4.5+ rigid .cga files (observed on generic shared-component
+                // meshes, e.g. radar "grnp" parts — radr_grnp_*_pl01.cga) have a
+                // NodeMeshCombo chunk that legitimately reports zero nodes even though
+                // their IvoLodMeshData chunk carries the file's full, real geometry.
+                // NumberOfNodes==0 only means "no node hierarchy to attach geometry
+                // to", not "no geometry" — build a single implicit node directly from
+                // the lod mesh data instead of silently falling through to a null mesh.
+                var lodMeshOnly = Models[0].ChunkMap.Values
+                    .FirstOrDefault(x => x.ChunkType == ChunkType.IvoLodMeshData) as ChunkIvoLodMeshData;
+
+                ChunkMesh? chunkMesh;
+                if (lodMeshOnly is not null && lodMeshOnly.RawDescriptors.Count >= 2)
+                {
+                    var lodGeometry = BuildLodMeshGeometry(lodMeshOnly, 0);
+                    chunkMesh = new ChunkMesh_802
+                    {
+                        NumVertices    = (int)(lodGeometry.Vertices?.NumElements ?? 0),
+                        NumIndices     = (int)(lodGeometry.Indices?.NumElements ?? 0),
+                        NumVertSubsets = (uint)(lodGeometry.GeometrySubsets?.Count ?? 0),
+                        GeometryInfo   = lodGeometry
+                    };
+                }
+                else
+                {
+                    chunkMesh = Models.Count == 1 ? null : CreateMeshData();
+                }
 
                 var rootNode = new ChunkNode_823
                 {
@@ -270,6 +372,8 @@ public partial class CryEngine
                     ID = 1,
                     MeshData = chunkMesh
                 };
+                if (chunkMesh is not null && Materials.Count > 0)
+                    rootNode.Materials = Materials.Values.First();
                 Nodes.Add(rootNode);
                 RootNode = rootNode;
             }
@@ -1036,7 +1140,7 @@ public partial class CryEngine
     /// Expands a wildcard pattern to find matching CAF files.
     /// Handles wildcards in both directory path (e.g., "path/*/*.caf") and filename (e.g., "path/*.caf").
     /// </summary>
-    internal List<string> ExpandCafWildcard(string pattern)
+    private List<string> ExpandCafWildcard(string pattern)
     {
         var results = new List<string>();
 
@@ -1083,23 +1187,9 @@ public partial class CryEngine
             if (Directory.Exists(baseDirectory))
             {
                 var searchOption = searchRecursively ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-
-                results.AddRange(Directory.GetFiles(baseDirectory, filePattern, searchOption)
-                    .Where(f => f.EndsWith(".caf", StringComparison.OrdinalIgnoreCase)));
-
-                // Some animations ship only as intermediate .i_caf files (uncompiled source) with no
-                // compiled .caf counterpart (e.g. Pandemic Express no-weapon anims — issue #242). They
-                // share the same CrCh chunk format, so include them too. Prefer the compiled .caf when
-                // both exist for the same animation, matched by filename stem.
-                var iCafPattern = filePattern.EndsWith(".caf", StringComparison.OrdinalIgnoreCase)
-                    ? string.Concat(filePattern.AsSpan(0, filePattern.Length - 4), ".i_caf")
-                    : filePattern;
-                var compiledStems = results
-                    .Select(Path.GetFileNameWithoutExtension)
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                results.AddRange(Directory.GetFiles(baseDirectory, iCafPattern, searchOption)
-                    .Where(f => f.EndsWith(".i_caf", StringComparison.OrdinalIgnoreCase)
-                                && !compiledStems.Contains(Path.GetFileNameWithoutExtension(f))));
+                var matchingFiles = Directory.GetFiles(baseDirectory, filePattern, searchOption);
+                results.AddRange(matchingFiles.Where(f =>
+                    f.EndsWith(".caf", StringComparison.OrdinalIgnoreCase)));
 
                 Log.D("Searched '{0}' with pattern '{1}', recursive={2}, found {3} files",
                     baseDirectory, filePattern, searchRecursively, results.Count);
@@ -1235,7 +1325,7 @@ public partial class CryEngine
             FilePath = filePath
         };
 
-        // Get timing info — traditional CAF uses ChunkTimingFormat; IVO CAF uses ChunkIvoAnimInfo
+        // Get timing info from timing chunk
         var timingChunk = cafModel.ChunkMap.Values.OfType<ChunkTimingFormat>().FirstOrDefault();
         if (timingChunk is not null)
         {
@@ -1243,19 +1333,6 @@ public partial class CryEngine
             animation.TicksPerFrame = timingChunk.TicksPerFrame;
             animation.StartFrame = timingChunk.GlobalRange.Start;
             animation.EndFrame = timingChunk.GlobalRange.End;
-        }
-        else
-        {
-            // IVO CAF: key times are frame numbers; derive timing from ChunkIvoAnimInfo
-            var ivoAnimInfo = cafModel.ChunkMap.Values.OfType<ChunkIvoAnimInfo>().FirstOrDefault();
-            if (ivoAnimInfo is not null)
-            {
-                float fps = ivoAnimInfo.FramesPerSecond > 0 ? ivoAnimInfo.FramesPerSecond : 30f;
-                animation.SecsPerTick = 1f / fps;
-                animation.TicksPerFrame = 1;
-                animation.StartFrame = 0;
-                animation.EndFrame = (int)ivoAnimInfo.EndFrame;
-            }
         }
 
         // Check for additive animation flag from GlobalAnimationHeaderCAF chunk
@@ -1454,6 +1531,160 @@ public partial class CryEngine
             Normals = skinMesh.Normals,
             Tangents = skinMesh.QTangents ?? skinMesh.Tangents,
             BoneMappings = skinMesh.BoneMappings
+        };
+    }
+
+    /// <summary>
+    /// Factor between the SNORM decode's extent and the mesh's true extent. Every sample
+    /// measured (cooler, radar, ESPR, Banu) has QuantizationScale 0.5 and a node box
+    /// exactly twice the decoded size, i.e. the stored scale behaves as a half-extent.
+    /// </summary>
+    private const float IvoLodMeshScaleCorrection = 2.0f;
+
+    private GeometryInfo BuildLodMeshGeometry(ChunkIvoLodMeshData lodMesh, int _unused)
+        => BuildLodMeshGeometry(lodMesh.Sections.Count > 0 ? lodMesh.Sections[0] : null, null, null);
+
+    /// <summary>
+    /// Builds LOD0 geometry for one CAFEBABE section, mapped into real model space.
+    ///
+    /// The SNORM decode in the chunk reader yields a mesh that is exactly half its true
+    /// size, centred on the section's own quantization origin rather than where the mesh
+    /// belongs. Verified 2026-08-14 across every sample tried — cooler, radar, ESPR and
+    /// Banu weapon parts — the owning node's bounding box is exactly 2x the decoded
+    /// extent, and the decoded centre equals QuantizationCenter to the last digit. The
+    /// ESPR barrel's node box (0.0974, 0.7438, 0.1920) also matches that part's entity-XML
+    /// inventoryOccupancyLocalBounds exactly, confirming the node box is true model space
+    /// and not merely self-consistent.
+    ///
+    /// This was invisible for years because each file was rendered alone with an
+    /// auto-framed camera, where a uniform half-scale cannot be seen. It only surfaced
+    /// when parts had to be combined against hardpoint offsets that come from a
+    /// correctly-scaled source.
+    ///
+    /// When the node box is unknown (files whose NodeMeshCombo reports zero nodes, e.g.
+    /// the shared radar meshes) only the scale is corrected, about the section's own
+    /// centre — there is no second source to place it against, and such files are always
+    /// rendered on their own.
+    /// </summary>
+    private GeometryInfo BuildLodMeshGeometry(
+        IvoLodMeshSection? section,
+        System.Numerics.Vector3? nodeBoundingBoxMin,
+        System.Numerics.Vector3? nodeBoundingBoxMax)
+    {
+        // Descriptors[0] is a null header; all valid submeshes are [1..descs.Count-1].
+        // NumberOfMeshSubsets from NodeMeshCombo represents material slots, NOT descriptor count —
+        // use all descriptor entries the reader already validated.
+        var descs = section?.Descriptors ?? [];
+        if (section is null || descs.Count < 2 || section.RawPositions is null || section.RawLocalIndices is null)
+        {
+            Log.W($"BuildLodMeshGeometry: insufficient descriptor data ({descs.Count} entries)");
+            return new() { BoundingBox = new(System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero) };
+        }
+        var lodMesh = section;
+
+        int submeshCount = descs.Count - 1; // entries [1..descs.Count-1]
+        uint lod0VertCount = descs[descs.Count - 1].CumVerts;
+        uint lod0IdxCount  = descs[descs.Count - 1].CumIdx;
+
+        // A well-formed descriptor table's last entry carries the total cumulative vert/index
+        // count. Some files (confirmed: CVSA Cannon's behr_bal_can_s2.cga, first CAFEBABE
+        // section) have a corrupt final entry — CumVerts/CumIdx both 0 while CumTri/Packed hold
+        // clearly-garbage values (e.g. CumTri=3183688622) — which used to crash here with an
+        // IndexOutOfRangeException on the empty lod0Verts[0] a few lines down. Fail gracefully
+        // like the "insufficient descriptor data" case above instead of crashing the whole file.
+        if (lod0VertCount == 0 || lod0IdxCount == 0)
+        {
+            Log.W($"BuildLodMeshGeometry: final descriptor entry has zero vert/index count " +
+                  $"(CumVerts={lod0VertCount}, CumIdx={lod0IdxCount}) — corrupt or empty section, skipping");
+            return new() { BoundingBox = new(System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero) };
+        }
+
+        // Build global uint indices (convert per-submesh local byte indices to global vertex indices)
+        var globalIndices = new uint[lod0IdxCount];
+        var subsets = new System.Collections.Generic.List<Models.Structs.MeshSubset>(submeshCount);
+
+        uint prevCumVerts = 0;
+        uint prevCumIdx   = 0;
+        uint prevCumTri   = 0;
+
+        for (int s = 1; s <= submeshCount; s++)
+        {
+            var (cumVerts, cumIdx, cumTri, _) = descs[s];
+
+            uint firstVertex = prevCumVerts;
+            uint numVertices = cumVerts - prevCumVerts;
+            uint firstIndex  = prevCumIdx;
+            uint numIndices  = cumIdx - prevCumIdx;
+            uint firstTri    = prevCumTri;
+
+            // Per-triangle mat ID stored in RawTriMatIDs; value is the raw submesh byte
+            int matID = lodMesh.RawTriMatIDs is { } tids && firstTri < tids.Length
+                ? tids[firstTri] : s - 1;
+
+            for (uint i = firstIndex; i < firstIndex + numIndices; i++)
+                globalIndices[i] = firstVertex + lodMesh.RawLocalIndices[i];
+
+            subsets.Add(new Models.Structs.MeshSubset
+            {
+                FirstIndex  = (int)firstIndex,
+                NumIndices  = (int)numIndices,
+                FirstVertex = (int)firstVertex,
+                NumVertices = (int)numVertices,
+                MatID       = matID,
+            });
+
+            prevCumVerts = cumVerts;
+            prevCumIdx   = cumIdx;
+            prevCumTri   = cumTri;
+        }
+
+        // A descriptor table can be internally inconsistent — its submesh vertex ranges
+        // not covering the local indices that reference them — which yields indices past
+        // the end of the LOD0 vertex slice. glTF importers reject the whole file for this
+        // (Blender: "index N is out of bounds"), so one bad section would otherwise take
+        // the entire model down. Confirmed on the Reign-3 Repeater chassis' DMG_base_body
+        // section (a damage-state variant, not visible geometry): 87 vertices but indices
+        // up to 93, and an index count not divisible by 3. Decline the section like the
+        // corrupt-table case above rather than emit an unloadable file.
+        foreach (var gi in globalIndices)
+        {
+            if (gi < lod0VertCount)
+                continue;
+            Log.W($"BuildLodMeshGeometry: index {gi} exceeds LOD0 vertex count {lod0VertCount} " +
+                  "— inconsistent descriptor table, skipping section");
+            return new() { BoundingBox = new(System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero) };
+        }
+
+        // Slice LOD0 vertices only
+        var lod0Verts = new System.Numerics.Vector3[lod0VertCount];
+        System.Array.Copy(lodMesh.RawPositions, 0, lod0Verts, 0, (int)lod0VertCount);
+
+        // Map the half-scale, quantization-centred decode into real model space (see the
+        // method's remarks). Scale about the section's own centre, then move that centre
+        // onto the node box's centre when one is known.
+        var quantCenter = lodMesh.QuantizationCenter;
+        var targetCenter = quantCenter;
+        if (nodeBoundingBoxMin is { } nbMin && nodeBoundingBoxMax is { } nbMax)
+            targetCenter = (nbMin + nbMax) / 2f;
+
+        for (int i = 0; i < lod0Verts.Length; i++)
+            lod0Verts[i] = (lod0Verts[i] - quantCenter) * IvoLodMeshScaleCorrection + targetCenter;
+
+        // Compute bounding box
+        var bmin = lod0Verts[0];
+        var bmax = lod0Verts[0];
+        foreach (var v in lod0Verts)
+        {
+            bmin = System.Numerics.Vector3.Min(bmin, v);
+            bmax = System.Numerics.Vector3.Max(bmax, v);
+        }
+
+        return new()
+        {
+            BoundingBox = new(bmin, bmax),
+            GeometrySubsets = subsets,
+            Vertices = new Datastream<System.Numerics.Vector3>(DatastreamType.VERTICES, lod0VertCount, 12, lod0Verts),
+            Indices  = new Datastream<uint>(DatastreamType.INDICES, lod0IdxCount, 4, globalIndices),
         };
     }
 

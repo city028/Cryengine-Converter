@@ -10,8 +10,6 @@ namespace CgfConverter.Utils;
 
 public static class MaterialUtilities
 {
-    private static readonly TaggedLogger Log = new(nameof(MaterialUtilities));
-
     public static Material? FromFile(string path, string? materialName, string? objectDir = null) =>
         FromStream(new FileStream(path, FileMode.Open, FileAccess.Read), materialName, objectDir, true);
 
@@ -53,13 +51,13 @@ public static class MaterialUtilities
 
                     // Add MatLayers
                     fullMats.Add(mat1);
-                    // Some materials declare an empty <MatLayers/> — Layers is null in that case.
-                    if (mat1.MatLayers?.Layers is { Length: > 0 } layers)
+                    if (mat1.MatLayers is not null)
                     {
-                        mat1.SubMaterials = new Material[layers.Length];
+                        int numberOfMatLayers = mat1.MatLayers.Layers.Length;
+                        mat1.SubMaterials = new Material[numberOfMatLayers];
 
                         int index = 0;
-                        foreach (var layer in layers)
+                        foreach (var layer in mat1.MatLayers.Layers)
                         {
                             if (objectDir is not null && layer.Path is not null)
                             {
@@ -92,7 +90,7 @@ public static class MaterialUtilities
         }
         catch (Exception ex)
         {
-            Log.W("Failed to deserialize material '{0}': {1}", materialName ?? "(unnamed)", ex.Message);
+            Debug.WriteLine("{0} failed deserialize - {1}", materialName, ex.Message);
             return CreateDefaultMaterial(materialName ?? "default_mat");
         }
         finally
