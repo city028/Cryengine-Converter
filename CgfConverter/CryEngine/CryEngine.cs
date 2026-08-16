@@ -1597,8 +1597,47 @@ public partial class CryEngine
         var lodMesh = section;
 
         int submeshCount = descs.Count - 1; // entries [1..descs.Count-1]
-        uint lod0VertCount = descs[descs.Count - 1].CumVerts;
-        uint lod0IdxCount  = descs[descs.Count - 1].CumIdx;
+
+        // The descriptor table is offset by one: entry[i].Packed carries
+        // (numVerts << 16 | numIndices) for submesh i+1, NOT for entry i itself.
+        // Verified on every consecutive pair of every file checked — packed[i] equals
+        // descs[i+1].CumVerts-descs[i].CumVerts and descs[i+1].CumIdx-descs[i].CumIdx
+        // exactly. Consequently the LAST entry's Packed declares a final submesh that
+        // has no cumulative row of its own, and reading the count from the last
+        // cumulative row alone silently discards it.
+        //
+        // That drop is not a rounding detail: measured across 20 sections spanning three
+        // manufacturers it loses 8% of all vertices, and up to 55% of a single section.
+        // It is also the root cause of the ship-weapon "barrel" defects — where the
+        // dropped submesh happens to carry load-bearing geometry the mesh visibly breaks.
+        // behr_bal_rep_s2_bar_1 had ZERO triangles bridging its barrel and gains the
+        // missing 182 the moment this submesh is emitted, while its s1/s3 siblings (same
+        // vertex/index/descriptor counts, different submesh ORDER) always looked correct
+        // because their final submesh was incidental geometry.
+        //
+        // NOTE the name lod0* is historical and misleading: these .cga files ship LOD1-5
+        // as separate sibling files, so a section holds exactly one LOD. There is no
+        // per-LOD boundary inside it to find, which is why the long-standing "no per-LOD
+        // boundary marker" limitation never resolved — it was chasing something absent.
+        var lastDesc = descs[descs.Count - 1];
+        uint finalVerts = lastDesc.Packed >> 16;
+        uint finalIdx   = lastDesc.Packed & 0xFFFF;
+
+        // Only trust Packed when it reconciles the table against the section header's own
+        // declared totals. That doubles as validation: a corrupt table will not add up,
+        // and falls through to the previous behaviour rather than reading past the buffer.
+        bool hasFinalSubmesh =
+            finalVerts > 0 && finalIdx > 0 &&
+            lastDesc.CumVerts + finalVerts == section.VertexCount &&
+            lastDesc.CumIdx + finalIdx == section.IndexCount;
+
+        uint lod0VertCount = hasFinalSubmesh ? section.VertexCount : lastDesc.CumVerts;
+        uint lod0IdxCount  = hasFinalSubmesh ? section.IndexCount  : lastDesc.CumIdx;
+
+        if (!hasFinalSubmesh && finalVerts > 0 && finalIdx > 0)
+            Log.D($"BuildLodMeshGeometry: trailing submesh ({finalVerts} verts, {finalIdx} idx) " +
+                  $"does not reconcile with section totals ({section.VertexCount}/{section.IndexCount}) " +
+                  "— emitting described submeshes only");
 
         // A well-formed descriptor table's last entry carries the total cumulative vert/index
         // count. Some files (confirmed: CVSA Cannon's behr_bal_can_s2.cga, first CAFEBABE
@@ -1615,15 +1654,22 @@ public partial class CryEngine
 
         // Build global uint indices (convert per-submesh local byte indices to global vertex indices)
         var globalIndices = new uint[lod0IdxCount];
-        var subsets = new System.Collections.Generic.List<Models.Structs.MeshSubset>(submeshCount);
+        var subsets = new System.Collections.Generic.List<Models.Structs.MeshSubset>(submeshCount + 1);
 
         uint prevCumVerts = 0;
         uint prevCumIdx   = 0;
         uint prevCumTri   = 0;
 
-        for (int s = 1; s <= submeshCount; s++)
+        // Iterate one extra time when the trailing submesh reconciles, using the totals
+        // from the section header as its cumulative row.
+        int emitCount = hasFinalSubmesh ? submeshCount + 1 : submeshCount;
+
+        for (int s = 1; s <= emitCount; s++)
         {
-            var (cumVerts, cumIdx, cumTri, _) = descs[s];
+            var (cumVerts, cumIdx, cumTri, _) = s <= submeshCount
+                ? descs[s]
+                : (section.VertexCount, section.IndexCount,
+                   lastDesc.CumTri + finalIdx / 3, 0u);
 
             uint firstVertex = prevCumVerts;
             uint numVertices = cumVerts - prevCumVerts;
