@@ -328,3 +328,6 @@ sync.ffs_db
 /CLAUDE.md
 /TODO.md
 /SESSION-HANDOVER.md
+
+# Release artifacts built locally for upload to GitHub Releases
+/cgf-converter-*-win-x64.zip
