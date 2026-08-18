@@ -2,13 +2,15 @@
 
 **Date:** 2026-04-21 (session 1-2), updated 2026-08-06 (session 3), updated 2026-08-11 (session 4),
 updated 2026-08-12 (session 5, then session 6 same day), updated 2026-08-13 (session 7),
-updated 2026-08-14 (session 8, then session 9 same day)
-**Branch:** release/v2.0
-**Deployed binary:** `D:\projects\sc-scrafting-sync\Tools\cgf-converter.exe` (**rebuilt and redeployed in
-session 9** with three new fixes — multi-section CAFEBABE reading, the half-scale/wrong-origin decode
-correction, and the unbuildable-section guards. Previous binary backed up to
-`D:\projects\sc-scrafting-sync\Tools\bak\cgf-converter_20260814_161500.exe`. All prior sessions' fixes are
-still included.)
+updated 2026-08-14 (session 8, then session 9 same day), updated 2026-08-15 (session 10),
+updated 2026-08-16 (session 11)
+**Branch:** `master` (was `release/v2.0` through session 9)
+**Deployed binary:** `D:\projects\sc-scrafting-sync\Tools\cgf-converter.exe`, built 2026-08-16 10:24.
+It contains every fix through `2683860`, including the final-submesh fix — **despite stamping
+`ProductVersion 2.1.0+224903d`**. It was built from a dirty working tree 76 minutes before that
+commit landed, so the stamp names the last commit at build time rather than its true contents;
+confirmed 2026-08-18 by UTF-16 string search of the binary. Previous binary backed up to
+`D:\projects\sc-scrafting-sync\Tools\bak\cgf-converter_20260814_161500.exe`.
 
 > ✅ **This repo is now under git** (2026-08-15), pushed to `https://github.com/city028/Cryengine-Converter`
 > as `master`, tagged `v2.1.0`. All prior work, including session 9's four edited files, is captured in the
@@ -18,6 +20,71 @@ still included.)
 
 ---
 
+> ⚠️ **Two open release chores** (tracked as item 24 in the `sc_crafting_sync` TODO, and under
+> "2.1.1 (pending release)" in this repo's `TODO.md`). The `v2.1.0` tag noted above sits at
+> `a923aaf`, **six commits behind `HEAD`** — it predates both geometry fixes below, so the
+> published release does not contain them. Cut `v2.1.1` from `HEAD`. And rebuild the deployed
+> exe from a committed state so its version stamp stops under-reporting what is in it.
+
+---
+
+## Session 11 (2026-08-16): the final submesh of every section was being dropped — root cause of the ship-weapon "barrel" defects
+
+`BuildLodMeshGeometry` took its vertex/index counts from the last **cumulative** descriptor row, but
+the descriptor table is offset by one: `entry[i].Packed` carries `(numVerts << 16 | numIndices)` for
+submesh *i+1*, not for entry *i*. Verified on every consecutive pair of every file examined —
+`packed[i]` equals `descs[i+1] - descs[i]` on both counts, exactly. The last entry therefore declares
+a final submesh with no cumulative row of its own, and it was never emitted.
+
+Reconciliation against each section header's own declared totals — `behr_bal_rep_s2_bar_1.cga`,
+section 1: last row `cumVerts=1920 cumIdx=7902`, `packed=0x00B60222` → (182, 546); `1920 + 182 = 2102`
+= declared `vertexCount`, and `7902 + 546 = 8448` = declared `indexCount`. 20 of 20 sections across
+three manufacturers reconciled the same way. The fix is **gated on that reconciliation**, so a corrupt
+table fails the check and falls through to the existing graceful-decline path rather than reading past
+the buffer.
+
+**Why this explains the barrels.** `behr_bal_rep_s1/s2/s3_bar_1.cga` are structurally identical — 2102
+verts, 8448 indices, 13 descriptors — and differ only in submesh **order**. Which submesh lands last is
+therefore arbitrary, and s2 is simply where load-bearing bridge geometry ended up: it had *zero*
+triangles spanning its barrel and gains the missing 182 the moment this submesh is emitted, while s1
+and s3 always looked correct. No per-item theory could explain that pattern.
+
+Independent confirmation: the three sizes' vertex counts converge (8136/8138/8138) where before they
+diverged (7271/7301/7425). Three sizes of one mesh should match; nothing was tuned toward that.
+
+**Impact:** +31,637 vertices (1.4%) recovered across 52 downstream ship-weapon items, concentrated in
+barrels; the worst single section was losing 55%. Downstream regression: 49/49 placement checks still
+pass, and bounds deviations measured against data this converter never sees improved on 42 measurements
+and worsened on none.
+
+**Retires a documented limitation.** `DEVNOTES.md` carried a "still open" note about there being no
+per-LOD boundary marker in the descriptor table, blamed for stray vertices at LOD boundaries. There is
+no such boundary: these `.cga` files ship LOD1-5 as **separate sibling files**, so a section holds
+exactly one LOD, and `lod0*` in that function is a misnomer. That limitation was chasing something
+absent — the off-by-one above is what was actually wrong. `DEVNOTES.md` corrected 2026-08-18.
+
+---
+
+## Session 10 (2026-08-15): scale was pivoting on the wrong centre
+
+`BuildLodMeshGeometry` scaled each section about `lodMesh.QuantizationCenter`. That is the centre of the
+quantization *volume*, not of the geometry, and the two differ whenever the LOD0 vertices do not fill
+that volume symmetrically. Because the scale step doubles the offset, any such section landed displaced
+by **twice** the difference — measured up to 0.086 on the BRVS chassis. It now pivots on the decoded
+slice's own bounding-box centre, which makes the result land exactly on the node box.
+
+Verified against `inventoryOccupancyLocalBounds` declared in each part's entity XML, which this converter
+plays no part in computing. For the BEHR SW16BR2 repeater: chassis 0.9999, firing mechanism 1.0008,
+ventilation 0.9992, barrel 0.9998 — against 1.260 for the barrel before the fix. Both established
+reference files, `cool_acom_s01_pl02.cga` and `radr_grnp_s02_pl01.cga`, produce byte-identical `.glb`.
+
+**Tried and reverted the same day:** resting a mesh at the origin when its node carried a translation, on
+the theory that the node's bounding-box centre double-counted the placement. It does not — the box centre
+is expressed in the node's own space, so box centre, node transform and parent transform are all
+required. Discarding it moved the barrel 0.362 inward while leaving its length correct, which presents as
+a truncated barrel rather than a misplaced one.
+
+---
 ## Session 9 Update (2026-08-14, same day as session 8): Multi-section CAFEBABE reading implemented; found and fixed a universal half-scale decode; unbuildable sections no longer invalidate whole files
 
 Session 8 ended with the ship-weapon combine working for one item via a Blender-side workaround. Session 9
