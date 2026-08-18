@@ -331,3 +331,6 @@ sync.ffs_db
 
 # Release artifacts built locally for upload to GitHub Releases
 /cgf-converter-*-win-x64.zip
+
+# Publish output (dotnet publish -o publish)
+/publish/
