@@ -321,3 +321,10 @@ OpenCover/
 /bak/
 sync.ffs_db
 
+
+# Local working notes — deliberately not published to GitHub.
+# Kept local-only and backed up by other means. Untracked 2026-08-18 via
+# `git rm --cached`; they remain in pre-2026-08-18 history.
+/CLAUDE.md
+/TODO.md
+/SESSION-HANDOVER.md
