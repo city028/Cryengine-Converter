@@ -184,6 +184,12 @@ covering 1941 of that section's 2105 vertices and dropping 164. Its sibling `bar
 is exactly the limitation flagged in the original architecture notes at the bottom of this file ("the code
 uses ALL descriptors … this probably needs refinement"). Parked deliberately at the user's direction.
 
+> **RESOLVED in session 11 (2026-08-16) — and this paragraph is the same bug, correctly observed but
+> wrongly theorised.** There is no LOD boundary here to refine: these `.cga` files ship LOD1-5 as separate
+> sibling files, so a section holds exactly one LOD. The real defect is that the descriptor table is offset
+> by one, leaving the final submesh with no cumulative row of its own so it was never emitted. Note the
+> arithmetic above matches exactly — 2105 - 1941 = 164 is that dropped final submesh. See session 11.
+
 ---
 
 ## Session 8 Update (2026-08-14): Disproved session 7's "2x scale" lead; found the real cross-format (skinMesh vs. lodMesh) split; fix implemented and deployed to `sc_crafting_sync`; barrel confirmed by user, ventilation re-check pending
